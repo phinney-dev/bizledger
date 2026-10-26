@@ -5,4 +5,4 @@ pages_build_output_dir = "public"
 [[d1_databases]]
 binding = "DB"
 database_name = "bizledger-db"
-database_id = "REPLACE_WITH_YOUR_D1_ID"
+database_id = "b028c497-3f10-4624-b96e-9256643d89d6"
