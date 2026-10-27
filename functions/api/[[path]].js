@@ -23,7 +23,11 @@ async function hashPw(pw, saltHex) {
 }
 const verifyPw = async (pw, stored) => eq(await hashPw(pw, stored.split('$')[0]), stored);
 const getAuth = async (db, k) => { try { const r = await db.prepare('SELECT value FROM auth WHERE key=?').bind(k).first(); return r ? r.value : null; } catch { return null; } };
+const checkPw = async (env, pw) => { const st = await getAuth(env.DB, 'pw'); return st ? verifyPw(pw, st) : eq(pw, String(env.ADMIN_PASSWORD).trim()); };
+const setAuth = (db, k, v) => db.prepare('INSERT INTO auth(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind(k, v);
+const mkCookie = async (env, sv) => { const exp = Date.now() + 30 * 864e5; return `s=${exp}.${sv}.${await sign(`${exp}.${sv}`, env.SESSION_SECRET)}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=2592000`; };
 async function authed(req, env) {
+  if ((await getAuth(env.DB, 'nopw')) === '1') return true;
   const c = (req.headers.get('cookie') || '').match(/(?:^|; )s=([^;]+)/);
   if (!c) return false;
   const [exp, sv, sig] = c[1].split('.');
@@ -40,12 +44,8 @@ export async function onRequest({ request, env, params }) {
 
   if (res === 'login' && m === 'POST') {
     const { password = '' } = await request.json().catch(() => ({}));
-    const stored = await getAuth(db, 'pw');
-    const ok = stored ? await verifyPw(String(password), stored) : eq(password, String(env.ADMIN_PASSWORD).trim());
-    if (!ok) return json({ error: 'Wrong password' }, 401);
-    const sv = (await getAuth(db, 'sv')) || '0';
-    const exp = Date.now() + 30 * 864e5;
-    return json({ ok: 1 }, 200, { 'set-cookie': `s=${exp}.${sv}.${await sign(`${exp}.${sv}`, env.SESSION_SECRET)}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=2592000` });
+    if (!(await checkPw(env, String(password).trim()))) return json({ error: 'Wrong password' }, 401);
+    return json({ ok: 1 }, 200, { 'set-cookie': await mkCookie(env, (await getAuth(db, 'sv')) || '0') });
   }
   if (res === 'logout') return json({ ok: 1 }, 200, { 'set-cookie': 's=; Path=/; Max-Age=0' });
 
@@ -76,17 +76,38 @@ export async function onRequest({ request, env, params }) {
 
   if (res === 'reset' && m === 'POST') {
     const { token = '', password = '' } = await request.json().catch(() => ({}));
-    if (String(password).length < 10) return json({ error: 'Use at least 10 characters' }, 400);
+    const pw = String(password).trim();
+    if (pw.length < 10) return json({ error: 'Use at least 10 characters' }, 400);
     try {
       const row = await db.prepare('SELECT id FROM resets WHERE token_hash=? AND used=0 AND expires>?').bind(await sha256(String(token)), Date.now()).first();
       if (!row) return json({ error: 'This link is invalid or has expired. Ask for a new one.' }, 400);
       const up = (k, v) => db.prepare('INSERT INTO auth(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind(k, v);
-      await db.batch([up('pw', await hashPw(String(password))), up('sv', String(Date.now())), db.prepare('DELETE FROM resets')]);
+      await db.batch([up('pw', await hashPw(pw)), up('sv', String(Date.now())), db.prepare('DELETE FROM resets')]);
       return json({ ok: 1 });
     } catch { return json({ error: 'Reset is not ready: run schema.sql on the database again' }, 500); }
   }
 
   if (!(await authed(request, env))) return json({ error: 'Login required' }, 401);
+
+  if (res === 'password' && m === 'POST') {
+    const { current = '', password = '' } = await request.json().catch(() => ({}));
+    const pw = String(password).trim();
+    if (pw.length < 10) return json({ error: 'Use at least 10 characters' }, 400);
+    if (!(await checkPw(env, String(current).trim()))) return json({ error: 'Current password is wrong' }, 403);
+    const sv = String(Date.now());
+    await db.batch([setAuth(db, 'pw', await hashPw(pw)), setAuth(db, 'sv', sv)]);
+    return json({ ok: 1 }, 200, { 'set-cookie': await mkCookie(env, sv) });
+  }
+  if (res === 'security') {
+    if (m === 'GET') return json({ protected: (await getAuth(db, 'nopw')) !== '1' });
+    if (m === 'POST') {
+      const { enable, current = '' } = await request.json().catch(() => ({}));
+      if (enable) { await db.prepare("DELETE FROM auth WHERE key='nopw'").run(); return json({ protected: true }); }
+      if (!(await checkPw(env, String(current).trim()))) return json({ error: 'Current password is wrong' }, 403);
+      await setAuth(db, 'nopw', '1').run();
+      return json({ protected: false });
+    }
+  }
 
   if (res === 'summary') {
     const month = new Date().toISOString().slice(0, 8) + '01';

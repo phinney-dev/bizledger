@@ -53,6 +53,8 @@ input,select{width:100%;padding:8px 10px;border:1px solid var(--rule);border-rad
 .err{color:var(--red);font-size:13px;min-height:18px;margin-top:8px}
 #login,#reset{max-width:340px;margin:18vh auto;padding:24px}
 .ok{color:var(--teal);font-size:13px;min-height:18px;margin-top:8px}
+.pwrap{position:relative}.pwrap input{padding-right:42px}
+.eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:0;color:var(--mute);cursor:pointer;padding:6px;display:flex;opacity:.6}
 .lnk{color:var(--teal);font-size:13px}
 @media (max-width:720px){.app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr;min-height:0}nav{position:static;height:auto;flex-direction:row;align-items:center;overflow-x:auto;border-right:0;border-bottom:1px solid var(--rule);padding:8px 10px}nav h1{display:none}nav button{flex:none;white-space:nowrap}nav .out{margin:0 0 0 auto}main{padding:18px}.big div{border-right:0;border-bottom:1px solid var(--rule)}.big div:last-child{border-bottom:0}}
 </style>
@@ -106,7 +108,7 @@ async function api(p,method='GET',body){
 function showLogin(){$('#app').hidden=true;$('#login').hidden=false;$('#pw').focus()}
 $('#lgo').onclick=login;$('#pw').onkeydown=e=>e.key==='Enter'&&login();
 async function login(){
-  try{await api('login','POST',{password:$('#pw').value});$('#login').hidden=true;$('#pw').value='';boot()}
+  try{await api('login','POST',{password:$('#pw').value.trim()});$('#login').hidden=true;$('#pw').value='';boot()}
   catch(e){$('#lerr').textContent=e.message}
 }
 let rtoken='';
@@ -114,17 +116,55 @@ function showReset(){rtoken=location.hash.slice(7);history.replaceState(null,'',
 $('#fg').onclick=async e=>{e.preventDefault();$('#lerr').textContent='';$('#lok').textContent='Sending...';
   try{await api('forgot','POST',{});$('#lok').textContent='A reset link was sent to your saved email. It works once for 15 minutes. Check spam too.'}
   catch(x){$('#lok').textContent='';$('#lerr').textContent=x.message}};
-$('#rgo').onclick=async()=>{const a=$('#np').value;$('#rerr').textContent='';
+$('#rgo').onclick=async()=>{const a=$('#np').value.trim();$('#rerr').textContent='';
   if(a.length<10){$('#rerr').textContent='Use at least 10 characters.';return}
-  if(a!==$('#np2').value){$('#rerr').textContent='The two passwords do not match.';return}
+  if(a!==$('#np2').value.trim()){$('#rerr').textContent='The two passwords do not match.';return}
   try{await api('reset','POST',{token:rtoken,password:a});$('#reset').hidden=true;$('#login').hidden=false;$('#lok').textContent='Password updated. Sign in with your new password.';$('#pw').focus()}
   catch(x){$('#rerr').textContent=x.message}};
+const EYE='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+function eyeify(i){i.setAttribute('autocapitalize','off');i.setAttribute('autocorrect','off');i.spellcheck=false;
+  const w=document.createElement('div');w.className='pwrap';i.parentNode.insertBefore(w,i);w.appendChild(i);
+  const b=document.createElement('button');b.type='button';b.className='eye';b.innerHTML=EYE;b.setAttribute('aria-label','Show password');
+  b.onclick=()=>{const s=i.type==='password';i.type=s?'text':'password';b.style.opacity=s?1:.6;b.setAttribute('aria-label',s?'Hide password':'Show password')};
+  w.appendChild(b)}
+['#pw','#np','#np2'].forEach(x=>eyeify($(x)));
+const sdlg=document.createElement('dialog');document.body.appendChild(sdlg);
+async function openSettings(){
+  let prot=true;try{prot=(await api('security')).protected}catch(e){}
+  sdlg.innerHTML=`<h3>Change password</h3>
+  <label for="cp">Current password</label><input id="cp" type="password" autocomplete="current-password">
+  <label for="cn">New password (at least 10 characters)</label><input id="cn" type="password" autocomplete="new-password">
+  <label for="cn2">Repeat new password</label><input id="cn2" type="password" autocomplete="new-password">
+  <div class="row"><button class="btn" id="spw">Change password</button></div>
+  <hr style="border:0;border-top:1px solid var(--rule);margin:18px 0">
+  <h3>Sign-in protection</h3>
+  <p style="color:var(--mute);margin:0 0 10px">${prot?'The password is <b>on</b>.':'The password is <b style="color:var(--red)">off</b>: anyone with the link can see and change your records.'}</p>
+  <button class="btn ghost ${prot?'del':''}" id="stog">${prot?'Turn off password':'Turn password back on'}</button>
+  <div class="err" id="serr"></div><div class="ok" id="sok"></div>
+  <div class="row"><button class="btn ghost" id="sx">Close</button></div>`;
+  ['#cp','#cn','#cn2'].forEach(x=>eyeify($(x)));
+  const msg=(e,o)=>{$('#serr').textContent=e||'';$('#sok').textContent=o||''};
+  $('#sx').onclick=()=>sdlg.close();
+  $('#spw').onclick=async()=>{const n=$('#cn').value.trim();
+    if(n.length<10)return msg('Use at least 10 characters.');
+    if(n!==$('#cn2').value.trim())return msg('The new passwords do not match.');
+    try{await api('password','POST',{current:$('#cp').value.trim(),password:n});$('#cp').value=$('#cn').value=$('#cn2').value='';msg('','Password changed.')}catch(x){msg(x.message)}};
+  $('#stog').onclick=async()=>{
+    if(prot){
+      if(!$('#cp').value.trim())return msg('Type your current password in the first box to turn it off.');
+      if(!confirm('Turn OFF the password? Anyone who has the link will be able to see, change and delete your records.'))return;
+      try{await api('security','POST',{enable:false,current:$('#cp').value.trim()});$('#out').hidden=true;sdlg.close()}catch(x){msg(x.message)}
+    }else{try{await api('security','POST',{enable:true});$('#out').hidden=false;sdlg.close()}catch(x){msg(x.message)}}};
+  sdlg.showModal();
+}
 function boot(){
   $('#app').hidden=false;
   const tabs=[['overview','Overview'],['items','Inventory'],['assets','Assets'],['expenses','Expenses'],['accounts','Accounts']];
-  $('#nav').innerHTML='<h1>BizLedger</h1>'+tabs.map(([k,l])=>`<button data-k="${k}">${l}</button>`).join('')+'<button class="out" id="out">Sign out</button>';
+  $('#nav').innerHTML='<h1>BizLedger</h1>'+tabs.map(([k,l])=>`<button data-k="${k}">${l}</button>`).join('')+'<button class="out" id="set">Settings</button><button id="out">Sign out</button>';
   $('#nav').onclick=e=>{const k=e.target.dataset.k;if(k)go(k)};
   $('#out').onclick=async()=>{await api('logout','POST');showLogin()};
+  $('#set').onclick=openSettings;
+  api('security').then(x=>{if(!x.protected)$('#out').hidden=true}).catch(()=>{});
   go(cur);
 }
 async function go(k){
