@@ -51,7 +51,9 @@ label{display:block;font-size:13px;color:var(--mute);margin:10px 0 3px}
 input,select{width:100%;padding:8px 10px;border:1px solid var(--rule);border-radius:6px;background:var(--paper)}
 .row{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
 .err{color:var(--red);font-size:13px;min-height:18px;margin-top:8px}
-#login{max-width:340px;margin:18vh auto;padding:24px}
+#login,#reset{max-width:340px;margin:18vh auto;padding:24px}
+.ok{color:var(--teal);font-size:13px;min-height:18px;margin-top:8px}
+.lnk{color:var(--teal);font-size:13px}
 @media (max-width:720px){.app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr;min-height:0}nav{position:static;height:auto;flex-direction:row;align-items:center;overflow-x:auto;border-right:0;border-bottom:1px solid var(--rule);padding:8px 10px}nav h1{display:none}nav button{flex:none;white-space:nowrap}nav .out{margin:0 0 0 auto}main{padding:18px}.big div{border-right:0;border-bottom:1px solid var(--rule)}.big div:last-child{border-bottom:0}}
 </style>
 </head>
@@ -60,8 +62,15 @@ input,select{width:100%;padding:8px 10px;border:1px solid var(--rule);border-rad
   <h2>BizLedger</h2>
   <p style="color:var(--mute)">Sign in to see your stock, assets, expenses and accounts.</p>
   <label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password">
-  <div class="err" id="lerr"></div>
-  <div class="row"><button class="btn" id="lgo">Sign in</button></div>
+  <div class="err" id="lerr"></div><div class="ok" id="lok"></div>
+  <div class="row" style="justify-content:space-between;align-items:center"><a href="#" class="lnk" id="fg">Forgot password?</a><button class="btn" id="lgo">Sign in</button></div>
+</div>
+<div id="reset" hidden>
+  <h2>Set a new password</h2>
+  <label for="np">New password (at least 10 characters)</label><input id="np" type="password" autocomplete="new-password">
+  <label for="np2">Repeat password</label><input id="np2" type="password" autocomplete="new-password">
+  <div class="err" id="rerr"></div>
+  <div class="row"><button class="btn" id="rgo">Save new password</button></div>
 </div>
 <div class="app" id="app" hidden>
   <nav id="nav"></nav>
@@ -100,6 +109,16 @@ async function login(){
   try{await api('login','POST',{password:$('#pw').value});$('#login').hidden=true;$('#pw').value='';boot()}
   catch(e){$('#lerr').textContent=e.message}
 }
+let rtoken='';
+function showReset(){rtoken=location.hash.slice(7);history.replaceState(null,'',location.pathname+location.search);$('#app').hidden=true;$('#login').hidden=true;$('#reset').hidden=false;$('#np').focus()}
+$('#fg').onclick=async e=>{e.preventDefault();$('#lerr').textContent='';$('#lok').textContent='Sending...';
+  try{await api('forgot','POST',{});$('#lok').textContent='A reset link was sent to your saved email. It works once for 15 minutes. Check spam too.'}
+  catch(x){$('#lok').textContent='';$('#lerr').textContent=x.message}};
+$('#rgo').onclick=async()=>{const a=$('#np').value;$('#rerr').textContent='';
+  if(a.length<10){$('#rerr').textContent='Use at least 10 characters.';return}
+  if(a!==$('#np2').value){$('#rerr').textContent='The two passwords do not match.';return}
+  try{await api('reset','POST',{token:rtoken,password:a});$('#reset').hidden=true;$('#login').hidden=false;$('#lok').textContent='Password updated. Sign in with your new password.';$('#pw').focus()}
+  catch(x){$('#rerr').textContent=x.message}};
 function boot(){
   $('#app').hidden=false;
   const tabs=[['overview','Overview'],['items','Inventory'],['assets','Assets'],['expenses','Expenses'],['accounts','Accounts']];
@@ -191,7 +210,7 @@ async function form(k,row){
     catch(x){$('#ferr').textContent=x.message}
   };
 }
-api('summary').then(()=>boot()).catch(e=>{if(e.message!=='auth')document.body.innerHTML='<p style="padding:24px">'+esc(e.message)+'</p>'});
+(location.hash.startsWith('#reset=')?Promise.resolve(showReset()).then(()=>{throw new Error('auth')}):api('summary').then(()=>boot())).catch(e=>{if(e.message!=='auth')document.body.innerHTML='<p style="padding:24px">'+esc(e.message)+'</p>'});
 </script>
 </body>
 </html>

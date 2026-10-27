@@ -7,33 +7,86 @@ const T = {
 };
 const enc = new TextEncoder();
 const json = (d, s = 200, h = {}) => new Response(JSON.stringify(d), { status: s, headers: { 'content-type': 'application/json', ...h } });
+const hex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, '0')).join('');
+const unhex = h => new Uint8Array(h.match(/../g).map(x => parseInt(x, 16)));
+const sha256 = async s => hex(await crypto.subtle.digest('SHA-256', enc.encode(s)));
 async function sign(msg, secret) {
   const k = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const s = await crypto.subtle.sign('HMAC', k, enc.encode(msg));
-  return [...new Uint8Array(s)].map(b => b.toString(16).padStart(2, '0')).join('');
+  return hex(await crypto.subtle.sign('HMAC', k, enc.encode(msg)));
 }
 const eq = (a, b) => { a = String(a); b = String(b); let r = a.length ^ b.length; for (let i = 0; i < Math.max(a.length, b.length); i++) r |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0); return r === 0; };
+async function hashPw(pw, saltHex) {
+  const salt = saltHex ? unhex(saltHex) : crypto.getRandomValues(new Uint8Array(16));
+  const key = await crypto.subtle.importKey('raw', enc.encode(pw), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 100000 }, key, 256);
+  return hex(salt) + '$' + hex(bits);
+}
+const verifyPw = async (pw, stored) => eq(await hashPw(pw, stored.split('$')[0]), stored);
+const getAuth = async (db, k) => { try { const r = await db.prepare('SELECT value FROM auth WHERE key=?').bind(k).first(); return r ? r.value : null; } catch { return null; } };
 async function authed(req, env) {
   const c = (req.headers.get('cookie') || '').match(/(?:^|; )s=([^;]+)/);
   if (!c) return false;
-  const [exp, sig] = c[1].split('.');
-  return !!exp && Date.now() < +exp && eq(sig || '', await sign(exp, env.SESSION_SECRET));
+  const [exp, sv, sig] = c[1].split('.');
+  if (!exp || !sv || !sig || Date.now() > +exp) return false;
+  if (!eq(sig, await sign(`${exp}.${sv}`, env.SESSION_SECRET))) return false;
+  return sv === ((await getAuth(env.DB, 'sv')) || '0');
 }
 
 export async function onRequest({ request, env, params }) {
   const [res, id] = params.path || [];
   const m = request.method;
+  const db = env.DB;
   if (!env.ADMIN_PASSWORD || !env.SESSION_SECRET) return json({ error: 'Set ADMIN_PASSWORD and SESSION_SECRET in Cloudflare' }, 500);
 
   if (res === 'login' && m === 'POST') {
     const { password = '' } = await request.json().catch(() => ({}));
-    if (!eq(password, env.ADMIN_PASSWORD)) return json({ error: 'Wrong password' }, 401);
+    const stored = await getAuth(db, 'pw');
+    const ok = stored ? await verifyPw(String(password), stored) : eq(password, String(env.ADMIN_PASSWORD).trim());
+    if (!ok) return json({ error: 'Wrong password' }, 401);
+    const sv = (await getAuth(db, 'sv')) || '0';
     const exp = Date.now() + 30 * 864e5;
-    return json({ ok: 1 }, 200, { 'set-cookie': `s=${exp}.${await sign(String(exp), env.SESSION_SECRET)}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=2592000` });
+    return json({ ok: 1 }, 200, { 'set-cookie': `s=${exp}.${sv}.${await sign(`${exp}.${sv}`, env.SESSION_SECRET)}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=2592000` });
   }
   if (res === 'logout') return json({ ok: 1 }, 200, { 'set-cookie': 's=; Path=/; Max-Age=0' });
+
+  if (res === 'forgot' && m === 'POST') {
+    const key = String(env.RESEND_API_KEY || '').trim(), to = String(env.RESET_EMAIL || '').trim();
+    if (!key || !to) return json({ error: 'Password reset email is not set up yet' }, 503);
+    const now = Date.now();
+    try {
+      const r = await db.prepare('SELECT COUNT(*) n, COALESCE(MAX(created),0) last FROM resets WHERE created>?').bind(now - 3600e3).first();
+      if (r.n >= 5 || now - r.last < 60e3) return json({ error: 'Please wait a minute before asking again' }, 429);
+      const token = hex(crypto.getRandomValues(new Uint8Array(32)));
+      await db.prepare('INSERT INTO resets(token_hash,created,expires) VALUES(?,?,?)').bind(await sha256(token), now, now + 15 * 60e3).run();
+      const link = `${String(env.APP_URL || new URL(request.url).origin).trim()}/#reset=${token}`;
+      const mail = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          from: String(env.RESET_FROM || 'BizLedger <onboarding@resend.dev>').trim(), to: [to],
+          subject: 'Reset your BizLedger password',
+          html: `<p>Someone asked to reset the BizLedger password.</p><p><a href="${link}">Set a new password</a></p><p>The link works once and expires in 15 minutes. If this was not you, ignore this email.</p>`,
+          text: `Reset your BizLedger password (works once, expires in 15 minutes): ${link}`,
+        }),
+      });
+      if (!mail.ok) { const d = await mail.json().catch(() => ({})); return json({ error: 'Could not send the email: ' + (d.message || mail.status) }, 502); }
+      return json({ ok: 1 });
+    } catch { return json({ error: 'Reset is not ready: run schema.sql on the database again' }, 500); }
+  }
+
+  if (res === 'reset' && m === 'POST') {
+    const { token = '', password = '' } = await request.json().catch(() => ({}));
+    if (String(password).length < 10) return json({ error: 'Use at least 10 characters' }, 400);
+    try {
+      const row = await db.prepare('SELECT id FROM resets WHERE token_hash=? AND used=0 AND expires>?').bind(await sha256(String(token)), Date.now()).first();
+      if (!row) return json({ error: 'This link is invalid or has expired. Ask for a new one.' }, 400);
+      const up = (k, v) => db.prepare('INSERT INTO auth(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').bind(k, v);
+      await db.batch([up('pw', await hashPw(String(password))), up('sv', String(Date.now())), db.prepare('DELETE FROM resets')]);
+      return json({ ok: 1 });
+    } catch { return json({ error: 'Reset is not ready: run schema.sql on the database again' }, 500); }
+  }
+
   if (!(await authed(request, env))) return json({ error: 'Login required' }, 401);
-  const db = env.DB;
 
   if (res === 'summary') {
     const month = new Date().toISOString().slice(0, 8) + '01';
