@@ -106,7 +106,7 @@ async function api(p,method='GET',body){
   return d;
 }
 function showLogin(){$('#app').hidden=true;$('#login').hidden=false;$('#pw').focus()}
-$('#lgo').onclick=login;$('#pw').onkeydown=e=>e.key==='Enter'&&login();
+$('#lgo').onclick=login;$('#pw').onkeydown=e=>{if(e.key==='Enter')login()};
 async function login(){
   try{await api('login','POST',{password:$('#pw').value.trim()});$('#login').hidden=true;$('#pw').value='';boot()}
   catch(e){$('#lerr').textContent=e.message}
@@ -116,6 +116,7 @@ function showReset(){rtoken=location.hash.slice(7);history.replaceState(null,'',
 $('#fg').onclick=async e=>{e.preventDefault();$('#lerr').textContent='';$('#lok').textContent='Sending...';
   try{await api('forgot','POST',{});$('#lok').textContent='A reset link was sent to your saved email. It works once for 15 minutes. Check spam too.'}
   catch(x){$('#lok').textContent='';$('#lerr').textContent=x.message}};
+$('#np2').onkeydown=e=>{if(e.key==='Enter')$('#rgo').click()};
 $('#rgo').onclick=async()=>{const a=$('#np').value.trim();$('#rerr').textContent='';
   if(a.length<10){$('#rerr').textContent='Use at least 10 characters.';return}
   if(a!==$('#np2').value.trim()){$('#rerr').textContent='The two passwords do not match.';return}
@@ -160,7 +161,7 @@ async function openSettings(){
 function boot(){
   $('#app').hidden=false;
   const tabs=[['overview','Overview'],['items','Inventory'],['assets','Assets'],['expenses','Expenses'],['accounts','Accounts']];
-  $('#nav').innerHTML='<h1>BizLedger</h1>'+tabs.map(([k,l])=>`<button data-k="${k}">${l}</button>`).join('')+'<button class="out" id="set">Settings</button><button id="out">Sign out</button>';
+  $('#nav').innerHTML='<h1>BizLedger</h1>'+tabs.map(([k,l])=>`<button data-k="${k}">${l}</button>`).join('')+'<button id="set">Settings</button><button class="out" id="out">Sign out</button>';
   $('#nav').onclick=e=>{const k=e.target.dataset.k;if(k)go(k)};
   $('#out').onclick=async()=>{await api('logout','POST');showLogin()};
   $('#set').onclick=openSettings;
@@ -181,7 +182,7 @@ const accName=id=>(accounts.find(a=>a.id==id)||{}).name||'';
 
 async function overview(){
   const s=await api('summary');accounts=s.accounts;
-  $('#main').innerHTML=`<div class="bar"><h2>Overview</h2><div class="tools">${syncBtn()}</div></div>
+  $('#main').innerHTML=`<div class="bar"><h2>Overview</h2><div class="tools">${syncBtn()}<button class="btn ghost" data-set="1">Settings</button></div></div>
   <div class="big">
    <div><b>${kes(s.stock)}</b><span>Stock value at cost</span></div>
    <div><b>${kes(s.assets)}</b><span>Assets bought</span></div>
@@ -226,6 +227,7 @@ async function accountsView(){
 }
 $('#main').onclick=e=>{
   const b=e.target.closest('button');if(!b)return;
+  if(b.dataset.set){openSettings();return}
   if(b.dataset.s){b.textContent='Syncing…';go(cur);return}
   if(b.dataset.a)form(b.dataset.a);
   if(b.dataset.e){const[k,id]=b.dataset.e.split(':');form(k,cache[k].find(r=>r.id==id))}
